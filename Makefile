@@ -53,7 +53,7 @@ update3rd :
 CSERVICE = snlua logger gate harbor
 LUA_CLIB = skynet \
   client \
-  bson md5 sproto lpeg $(TLS_MODULE)
+  bson md5 sproto lpeg fswatch $(TLS_MODULE)
 
 LUA_CLIB_SKYNET = \
   lua-skynet.c lua-seri.c \
@@ -117,6 +117,10 @@ $(LUA_CLIB_PATH)/ltls.so : lualib-src/ltls.c | $(LUA_CLIB_PATH)
 
 $(LUA_CLIB_PATH)/lpeg.so : 3rd/lpeg/lpcap.c 3rd/lpeg/lpcode.c 3rd/lpeg/lpprint.c 3rd/lpeg/lptree.c 3rd/lpeg/lpvm.c | $(LUA_CLIB_PATH)
 	$(CC) $(CFLAGS) $(SHARED) -I3rd/lpeg $^ -o $@ 
+
+$(LUA_CLIB_PATH)/fswatch.so : 3rd/fswatch/luabinding/src/fswatch_lua.c | $(LUA_CLIB_PATH)
+	cd 3rd/fswatch && cmake . && make
+	cp 3rd/fswatch/luabinding/src/libfswatch_lua.* $@
 
 clean :
 	rm -f $(SKYNET_BUILD_PATH)/skynet $(CSERVICE_PATH)/*.so $(LUA_CLIB_PATH)/*.so && \
