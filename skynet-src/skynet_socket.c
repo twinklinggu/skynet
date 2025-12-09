@@ -107,7 +107,7 @@ skynet_socket_poll() {
 		forward_message(SKYNET_SOCKET_TYPE_WARNING, false, &result);
 		break;
 	default:
-		skynet_error(NULL, "Unknown socket message type %d.",type);
+		skynet_error(NULL, "error: Unknown socket message type %d.",type);
 		return -1;
 	}
 	if (more) {
@@ -178,6 +178,18 @@ int
 skynet_socket_udp(struct skynet_context *ctx, const char * addr, int port) {
 	uint32_t source = skynet_context_handle(ctx);
 	return socket_server_udp(SOCKET_SERVER, source, addr, port);
+}
+
+int
+skynet_socket_udp_dial(struct skynet_context *ctx, const char * addr, int port){
+	uint32_t source = skynet_context_handle(ctx);
+	return socket_server_udp_dial(SOCKET_SERVER, source, addr, port);
+}
+
+int
+skynet_socket_udp_listen(struct skynet_context *ctx, const char * addr, int port){
+	uint32_t source = skynet_context_handle(ctx);
+	return socket_server_udp_listen(SOCKET_SERVER, source, addr, port);
 }
 
 int 

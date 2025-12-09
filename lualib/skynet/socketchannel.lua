@@ -60,6 +60,10 @@ local function close_channel_socket(self)
 	if self.__sock then
 		local so = self.__sock
 		self.__sock = false
+		if self.__wait_response then
+			skynet.wakeup(self.__wait_response)
+			self.__wait_response = nil
+		end
 		-- never raise error
 		pcall(socket.close,so[1])
 	end
@@ -112,6 +116,11 @@ local function dispatch_by_session(self)
 					end
 					skynet.wakeup(co)
 				end
+				if not self.__sock then
+					-- closed
+					wakeup_all(self, "channel_closed")
+					break
+				end
 			else
 				self.__thread[session] = nil
 				skynet.error("socket: unknown session :", session)
@@ -128,7 +137,7 @@ local function dispatch_by_session(self)
 end
 
 local function pop_response(self)
-	while true do
+	while self.__sock do
 		local func,co = table.remove(self.__request, 1), table.remove(self.__thread, 1)
 		if func then
 			return func, co
@@ -207,6 +216,11 @@ local function dispatch_by_order(self)
 				self.__result_data[co] = result_data
 			end
 			skynet.wakeup(co)
+			if not self.__sock then
+				-- closed
+				wakeup_all(self, "channel_closed")
+				break
+			end
 		else
 			close_channel_socket(self)
 			local errmsg

@@ -1,13 +1,14 @@
-#include <stdio.h>
 #include <string.h>
 #include <assert.h>
 #include <stdlib.h>
-#include <lua.h>
 #include <stdio.h>
 
-#include "malloc_hook.h"
+#include <lauxlib.h>
+
 #include "skynet.h"
 #include "atomic.h"
+
+#include "malloc_hook.h"
 
 // turn on MEMORY_CHECK can do more memory check, such as double free
 // #define MEMORY_CHECK
@@ -15,26 +16,34 @@
 #define MEMORY_ALLOCTAG 0x20140605
 #define MEMORY_FREETAG 0x0badf00d
 
-static ATOM_SIZET _used_memory = 0;
-static ATOM_SIZET _memory_block = 0;
-
 struct mem_data {
-	ATOM_ULONG handle;
-	ATOM_SIZET allocated;
+    alignas(CACHE_LINE_SIZE)
+	ATOM_ULONG     handle;
+    AtomicMemInfo  info;
 };
+_Static_assert(sizeof(struct mem_data) % CACHE_LINE_SIZE == 0, "mem_data must be cache-line aligned");
 
 struct mem_cookie {
+	size_t size;
 	uint32_t handle;
 #ifdef MEMORY_CHECK
 	uint32_t dogtag;
 #endif
+	uint32_t cookie_size;	// should be the last
 };
 
 #define SLOT_SIZE 0x10000
 #define PREFIX_SIZE sizeof(struct mem_cookie)
 
 static struct mem_data mem_stats[SLOT_SIZE];
+_Static_assert(alignof(mem_stats) % CACHE_LINE_SIZE == 0, "mem_stats must be cache-line aligned");
 
+static struct mem_data *
+get_mem_stat(uint32_t handle) {
+	int h = (int)(handle & (SLOT_SIZE - 1));
+	struct mem_data *data = &mem_stats[h];
+	return data;
+}
 
 #ifndef NOUSE_JEMALLOC
 
@@ -44,79 +53,59 @@ static struct mem_data mem_stats[SLOT_SIZE];
 #define raw_realloc je_realloc
 #define raw_free je_free
 
-static ATOM_SIZET *
-get_allocated_field(uint32_t handle) {
-	int h = (int)(handle & (SLOT_SIZE - 1));
-	struct mem_data *data = &mem_stats[h];
-	uint32_t old_handle = data->handle;
-	ssize_t old_alloc = (ssize_t)data->allocated;
-	if(old_handle == 0 || old_alloc <= 0) {
-		// data->allocated may less than zero, because it may not count at start.
-		if(!ATOM_CAS_ULONG(&data->handle, old_handle, handle)) {
-			return 0;
-		}
-		if (old_alloc < 0) {
-			ATOM_CAS_SIZET(&data->allocated, (size_t)old_alloc, 0);
-		}
-	}
-	if(data->handle != handle) {
-		return 0;
-	}
-	return &data->allocated;
-}
-
 inline static void
 update_xmalloc_stat_alloc(uint32_t handle, size_t __n) {
-	ATOM_FADD(&_used_memory, __n);
-	ATOM_FINC(&_memory_block);
-	ATOM_SIZET * allocated = get_allocated_field(handle);
-	if(allocated) {
-		ATOM_FADD(allocated, __n);
-	}
+	struct mem_data *data = get_mem_stat(handle);
+    // 当两个不同的 handle 被哈希到同一个槽位时, 新的服务会覆盖旧服务的数据
+    // 这种情况在实际运行中非常罕见, 因为同时存在的服务数量很难超过 65536
+    ATOM_STORE(&data->handle, handle);
+	atomic_meminfo_alloc(&data->info, __n);
 }
 
 inline static void
 update_xmalloc_stat_free(uint32_t handle, size_t __n) {
-	ATOM_FSUB(&_used_memory, __n);
-	ATOM_FDEC(&_memory_block);
-	ATOM_SIZET * allocated = get_allocated_field(handle);
-	if(allocated) {
-		ATOM_FSUB(allocated, __n);
-	}
+	struct mem_data *data = get_mem_stat(handle);
+	atomic_meminfo_free(&data->info, __n);
 }
 
 inline static void*
-fill_prefix(char* ptr) {
+fill_prefix(char* ptr, size_t sz, uint32_t cookie_size) {
 	uint32_t handle = skynet_current_handle();
-	size_t size = je_malloc_usable_size(ptr);
-	struct mem_cookie *p = (struct mem_cookie *)(ptr + size - sizeof(struct mem_cookie));
-	memcpy(&p->handle, &handle, sizeof(handle));
+	struct mem_cookie *p = (struct mem_cookie *)ptr;
+	char * ret = ptr + cookie_size;
+	sz += cookie_size;
+	p->size = sz;
+	p->handle = handle;
 #ifdef MEMORY_CHECK
-	uint32_t dogtag = MEMORY_ALLOCTAG;
-	memcpy(&p->dogtag, &dogtag, sizeof(dogtag));
+	p->dogtag = MEMORY_ALLOCTAG;
 #endif
-	update_xmalloc_stat_alloc(handle, size);
-	return ptr;
+	update_xmalloc_stat_alloc(handle, sz);
+	memcpy(ret - sizeof(uint32_t), &cookie_size, sizeof(cookie_size));
+	return ret;
+}
+
+inline static uint32_t
+get_cookie_size(char *ptr) {
+	uint32_t cookie_size;
+	memcpy(&cookie_size, ptr - sizeof(cookie_size), sizeof(cookie_size));
+	return cookie_size;
 }
 
 inline static void*
 clean_prefix(char* ptr) {
-	size_t size = je_malloc_usable_size(ptr);
-	struct mem_cookie *p = (struct mem_cookie *)(ptr + size - sizeof(struct mem_cookie));
-	uint32_t handle;
-	memcpy(&handle, &p->handle, sizeof(handle));
+	uint32_t cookie_size = get_cookie_size(ptr);
+	struct mem_cookie *p = (struct mem_cookie *)(ptr - cookie_size);
+	uint32_t handle = p->handle;
 #ifdef MEMORY_CHECK
-	uint32_t dogtag;
-	memcpy(&dogtag, &p->dogtag, sizeof(dogtag));
+	uint32_t dogtag = p->dogtag;
 	if (dogtag == MEMORY_FREETAG) {
 		fprintf(stderr, "xmalloc: double free in :%08x\n", handle);
 	}
 	assert(dogtag == MEMORY_ALLOCTAG);	// memory out of bounds
-	dogtag = MEMORY_FREETAG;
-	memcpy(&p->dogtag, &dogtag, sizeof(dogtag));
+	p->dogtag = MEMORY_FREETAG;
 #endif
-	update_xmalloc_stat_free(handle, size);
-	return ptr;
+	update_xmalloc_stat_free(handle, p->size);
+	return p;
 }
 
 static void malloc_oom(size_t size) {
@@ -185,17 +174,18 @@ void *
 skynet_malloc(size_t size) {
 	void* ptr = je_malloc(size + PREFIX_SIZE);
 	if(!ptr) malloc_oom(size);
-	return fill_prefix(ptr);
+	return fill_prefix(ptr, size, PREFIX_SIZE);
 }
 
 void *
 skynet_realloc(void *ptr, size_t size) {
 	if (ptr == NULL) return skynet_malloc(size);
 
+	uint32_t cookie_size = get_cookie_size(ptr);
 	void* rawptr = clean_prefix(ptr);
-	void *newptr = je_realloc(rawptr, size+PREFIX_SIZE);
+	void *newptr = je_realloc(rawptr, size+cookie_size);
 	if(!newptr) malloc_oom(size);
-	return fill_prefix(newptr);
+	return fill_prefix(newptr, size, cookie_size);
 }
 
 void
@@ -206,31 +196,50 @@ skynet_free(void *ptr) {
 }
 
 void *
-skynet_calloc(size_t nmemb,size_t size) {
-	void* ptr = je_calloc(nmemb + ((PREFIX_SIZE+size-1)/size), size );
-	if(!ptr) malloc_oom(size);
-	return fill_prefix(ptr);
+skynet_calloc(size_t nmemb, size_t size) {
+	uint32_t cookie_n = (PREFIX_SIZE+size-1)/size;
+	void* ptr = je_calloc(nmemb + cookie_n, size);
+	if(!ptr) malloc_oom(nmemb * size);
+	return fill_prefix(ptr, nmemb * size, cookie_n * size);
+}
+
+static inline uint32_t
+alignment_cookie_size(size_t alignment) {
+	if (alignment >= PREFIX_SIZE)
+		return alignment;
+	switch (alignment) {
+	case 4 :
+		return (PREFIX_SIZE + 3) / 4 * 4;
+	case 8 :
+		return (PREFIX_SIZE + 7) / 8 * 8;
+	case 16 :
+		return (PREFIX_SIZE + 15) / 16 * 16;
+	}
+	return (PREFIX_SIZE + alignment - 1) / alignment * alignment;
 }
 
 void *
 skynet_memalign(size_t alignment, size_t size) {
-	void* ptr = je_memalign(alignment, size + PREFIX_SIZE);
+	uint32_t cookie_size = alignment_cookie_size(alignment);
+	void* ptr = je_memalign(alignment, size + cookie_size);
 	if(!ptr) malloc_oom(size);
-	return fill_prefix(ptr);
+	return fill_prefix(ptr, size, cookie_size);
 }
 
 void *
 skynet_aligned_alloc(size_t alignment, size_t size) {
-	void* ptr = je_aligned_alloc(alignment, size + (size_t)((PREFIX_SIZE + alignment -1) & ~(alignment-1)));
+	uint32_t cookie_size = alignment_cookie_size(alignment);
+	void* ptr = je_aligned_alloc(alignment, size + cookie_size);
 	if(!ptr) malloc_oom(size);
-	return fill_prefix(ptr);
+	return fill_prefix(ptr, size, cookie_size);
 }
 
 int
 skynet_posix_memalign(void **memptr, size_t alignment, size_t size) {
-	int err = je_posix_memalign(memptr, alignment, size + PREFIX_SIZE);
+	uint32_t cookie_size = alignment_cookie_size(alignment);
+	int err = je_posix_memalign(memptr, alignment, size + cookie_size);
 	if (err) malloc_oom(size);
-	fill_prefix(*memptr);
+	fill_prefix(*memptr, size, cookie_size);
 	return err;
 }
 
@@ -273,27 +282,47 @@ mallctl_cmd(const char* name) {
 
 size_t
 malloc_used_memory(void) {
-	return ATOM_LOAD(&_used_memory);
+	MemInfo total = {};
+	for(int i = 0; i < SLOT_SIZE; i++) {
+		struct mem_data* data = &mem_stats[i];
+		const uint32_t handle = ATOM_LOAD(&data->handle);
+		if (handle != 0) {
+			atomic_meminfo_merge(&total, &data->info);
+		}
+	}
+	return total.alloc - total.free;
 }
 
 size_t
 malloc_memory_block(void) {
-	return ATOM_LOAD(&_memory_block);
+	MemInfo total = {};
+	for(int i = 0; i < SLOT_SIZE; i++) {
+		struct mem_data* data = &mem_stats[i];
+		const uint32_t handle = ATOM_LOAD(&data->handle);
+		if (handle != 0) {
+			atomic_meminfo_merge(&total, &data->info);
+		}
+	}
+	return total.alloc_count - total.free_count;
 }
 
 void
 dump_c_mem() {
-	int i;
-	size_t total = 0;
 	skynet_error(NULL, "dump all service mem:");
-	for(i=0; i<SLOT_SIZE; i++) {
+	MemInfo total = {};
+	for(int i = 0; i < SLOT_SIZE; i++) {
 		struct mem_data* data = &mem_stats[i];
-		if(data->handle != 0 && data->allocated != 0) {
-			total += data->allocated;
-			skynet_error(NULL, ":%08x -> %zdkb %db", data->handle, data->allocated >> 10, (int)(data->allocated % 1024));
+		const uint32_t handle = ATOM_LOAD(&data->handle);
+		if (handle != 0) {
+			MemInfo info = {};
+			atomic_meminfo_merge(&info, &data->info);
+			meminfo_merge(&total, &info);
+			const size_t using = info.alloc - info.free;
+			skynet_error(NULL, ":%08x -> %zukb %zub", handle, using >> 10, using);
 		}
 	}
-	skynet_error(NULL, "+total: %zdkb",total >> 10);
+	const size_t using = total.alloc - total.free;
+	skynet_error(NULL, "+total: %zukb", using >> 10);
 }
 
 char *
@@ -320,9 +349,12 @@ dump_mem_lua(lua_State *L) {
 	lua_newtable(L);
 	for(i=0; i<SLOT_SIZE; i++) {
 		struct mem_data* data = &mem_stats[i];
-		if(data->handle != 0 && data->allocated != 0) {
-			lua_pushinteger(L, data->allocated);
-			lua_rawseti(L, -2, (lua_Integer)data->handle);
+		const uint32_t handle = ATOM_LOAD(&data->handle);
+		if (handle != 0) {
+			MemInfo info = {};
+			atomic_meminfo_merge(&info, &data->info);
+			lua_pushinteger(L, info.alloc - info.free);
+			lua_rawseti(L, -2, handle);
 		}
 	}
 	return 1;
@@ -331,14 +363,13 @@ dump_mem_lua(lua_State *L) {
 size_t
 malloc_current_memory(void) {
 	uint32_t handle = skynet_current_handle();
-	int i;
-	for(i=0; i<SLOT_SIZE; i++) {
-		struct mem_data* data = &mem_stats[i];
-		if(data->handle == (uint32_t)handle && data->allocated != 0) {
-			return (size_t) data->allocated;
-		}
+	struct mem_data *data = get_mem_stat(handle);
+	if (ATOM_LOAD(&data->handle) != handle) {
+		return 0;
 	}
-	return 0;
+	MemInfo info = {};
+	atomic_meminfo_merge(&info, &data->info);
+	return info.alloc - info.free;
 }
 
 void

@@ -14,6 +14,7 @@ local pairs = pairs
 local error = error
 local string = string
 local xpcall = xpcall
+local pcall = pcall
 local debug = debug
 local table = table
 local tonumber = tonumber
@@ -427,16 +428,25 @@ end
 -- connect / handshake / message / ping / pong / close / error
 function M.accept(socket_id, handle, protocol, addr, options)
     if not (options and options.upgrade) then
-        socket.start(socket_id)
+        local isok, err = socket.start(socket_id)
+        if not isok then
+            return false, err
+        end
     end
     protocol = protocol or "ws"
     local ws_obj = _new_server_ws(socket_id, handle, protocol)
     ws_obj.addr = addr
     local on_warning = handle and handle["warning"]
     if on_warning then
-        socket.warning(socket_id, function (id, sz)
+        local isok = pcall(socket.warning, socket_id, function(id, sz)
             on_warning(ws_obj, sz)
         end)
+        if not isok then
+            if not _isws_closed(socket_id) then
+                _close_websocket(ws_obj)
+            end
+            return false, "connect is closed " .. socket_id
+        end
     end
 
     local ok, err = xpcall(resolve_accept, debug.traceback, ws_obj, options)
@@ -449,7 +459,7 @@ function M.accept(socket_id, handle, protocol, addr, options)
             if closed then
                 try_handle(ws_obj, "close")
             else
-                try_handle(ws_obj, "error")
+                try_handle(ws_obj, "error", err)
             end
         else
             -- error(err)
@@ -481,7 +491,12 @@ function M.connect(url, header, timeout)
     local socket_id = sockethelper.connect(host_addr, host_port, timeout)
     local ws_obj = _new_client_ws(socket_id, protocol, hostname)
     ws_obj.addr = host
-    write_handshake(ws_obj, host_addr, uri, header)
+    
+    local is_ok,err = pcall(write_handshake, ws_obj, host_addr, uri, header)
+    if not is_ok then
+        _close_websocket(ws_obj)
+        error(err)
+    end
     return socket_id
 end
 

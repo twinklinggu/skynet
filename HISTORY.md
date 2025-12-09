@@ -1,3 +1,18 @@
+v1.8.0 (2025-1-14)
+-----------
+* Update Lua to 5.4.7
+* service sessions can be rewind
+* Improve: udp (ipv6 support)
+* Improve: debug console
+* Improve: http
+* Improve: mongo driver
+* Improve: mysql driver
+* Bugfix: socketchannel
+* Bugfix: cluster
+* Bugfix: ssl
+* Bugfix: websocket
+* Bugfix: redis cluster driver
+
 v1.7.0 (2023-11-13)
 -----------
 * Update Lua to 5.4.6
@@ -92,7 +107,7 @@ v1.1.0-rc (2017-7-18)
 * httpc : Add httpc.timeout
 * mongo driver : sort support multi-key
 * bson : Check utf8 string
-* bson : No longer support numberic key 
+* bson : No longer support numeric key 
 * daemon mode: Can output the error messages
 * sproto : Support decimal number
 * sproto: Support binary type
@@ -136,7 +151,7 @@ v1.0.0-rc3 (2016-5-9)
 * skynet.getenv can return empty string
 * Add lua VM memory warning
 * lua VM support memory limit
-* skynet.pcall suport varargs
+* skynet.pcall support varargs
 * Bugfix : Global name query
 * Bugfix : snax.queryglobal
 
@@ -236,7 +251,7 @@ v1.0.0-alpha6 (2015-5-18)
 
 v1.0.0-alpha5 (2015-4-27)
 -----------
-* merge lua 5.3 offical bugfix 
+* merge lua 5.3 official bugfix 
 * improve sproto rpc api
 * fix a deadlock bug when service retire
 * improve cluster config reload
@@ -352,7 +367,7 @@ v0.6.0 (2014-8-18)
 * add sharedata
 * bugfix: service exit before init would not report back
 * add skynet.response and check multicall skynet.ret
-* skynet.newservice throw error when lanuch faild
+* skynet.newservice throw error when lanuch failed
 * Don't check imported function in snax.hotfix
 * snax service add change SERVICE_PATH and add it to package.path
 * skynet.redirect support string address
@@ -412,7 +427,7 @@ v0.4.0 (2014-6-30)
 * cluster.open support cluster name.
 * Add new api skynet.packstring , and skynet.unpack support lua string
 * socket.listen support put port into address. (address:port)
-* Redesign harbor/master/dummy, remove lots of C code and rewite in lua.
+* Redesign harbor/master/dummy, remove lots of C code and rewrite in lua.
 * Remove block connect api, queue sending message during connecting now.
 * Add skynet.time()
 
@@ -452,8 +467,8 @@ v0.2.0 (2014-5-12)
 * Add some snax api, snax.uniqueservice (etc.) , use independent protocol `PTYPE_SNAX` .
 * Add bootstrap lua script , remove some code in C .
 * Use a lua loader to load lua service code (and set the lua environment), remove some code in C.
-* Support preload a file before each lua serivce start.
-* Add datacenter serivce.
+* Support preload a file before each lua service start.
+* Add datacenter service.
 * Add multicast api.
 * Remove skynet.blockcall , simplify the implement of message queue.
 * When dropping message queue (at service exit) , dispatcher will post an error back to the source of each message.
