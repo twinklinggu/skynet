@@ -487,6 +487,21 @@ function skynet.trace_timeout(on)
 		co_create_for_timeout = trace_coroutine
 	else
 		timeout_traceback = nil
+		local session_id_timeout = {}
+		local timeout_co = coroutine_create(function(_, _, _, session)
+			while true do
+				local f = session_id_timeout[session]
+				if f then
+					session_id_timeout[session] = nil
+					skynet.fork(f)
+				end
+				session = select(4, coroutine_yield "SUSPEND")
+			end
+		end)
+		co_create_for_timeout = function(func, ti, session)
+			session_id_timeout[session] = func
+			return timeout_co
+		end
 		co_create_for_timeout = co_create
 	end
 end
@@ -496,7 +511,7 @@ skynet.trace_timeout(false)	-- turn off by default
 function skynet.timeout(ti, func)
 	local session = auxtimeout(ti)
 	assert(session)
-	local co = co_create_for_timeout(func, ti)
+	local co = co_create_for_timeout(func, ti, session)
 	assert(session_id_coroutine[session] == nil)
 	session_id_coroutine[session] = co
 	return co	-- for debug
