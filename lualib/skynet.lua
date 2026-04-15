@@ -502,7 +502,6 @@ function skynet.trace_timeout(on)
 			session_id_timeout[session] = func
 			return timeout_co
 		end
-		co_create_for_timeout = co_create
 	end
 end
 
