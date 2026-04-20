@@ -50,7 +50,7 @@ update3rd :
 
 # skynet
 
-CSERVICE = snlua logger gate harbor
+CSERVICE = snlua logger gate harbor fswatch
 LUA_CLIB = skynet \
   client \
   bson md5 sproto lpeg $(TLS_MODULE)
