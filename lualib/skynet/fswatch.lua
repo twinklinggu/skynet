@@ -3,10 +3,12 @@
 
 local skynet = require "skynet"
 local coroutine = require "skynet.coroutine"
+require "skynet.manager"
 
 local fswatch = {}
 local fswatch_mt = { __index = fswatch }
 
+local DEDUP_WINDOW = 10		-- 10ms de-duplication window
 -- Event mask constants (same as inotify API)
 fswatch.EVENT = {
 	ACCESS = 0x00000001,
@@ -40,11 +42,12 @@ end
 
 -- Create a new inotify monitor
 function fswatch.new()
-	require "skynet.manager"
 	local handle = skynet.launch("fswatch")
 	local self = setmetatable({
 		handle = handle,
 		callback = nil,
+		dedup = true,
+		_last_event = {},
 	}, fswatch_mt)
 
 	-- Subscribe to events
@@ -60,42 +63,69 @@ end
 
 -- Dispatch incoming events
 function fswatch:dispatch(msg)
-	local words = {}
-	for word in string.gmatch(msg, "%S+") do
-		table.insert(words, word)
+	local fields = {}
+	for field in string.gmatch(msg, "[^\t]+") do
+		table.insert(fields, field)
 	end
 	
-	if words[1] == "event" then
-		local wd = tonumber(words[2])
-		local mask = tonumber(words[3], 16)
-		local name = words[4]
-		if self.callback then
-			self.callback(wd, mask, name)
+	if fields[1] == "event" then
+		local wd = tonumber(fields[2])
+		local mask = tonumber(fields[3], 16)
+		local path = fields[4]
+		local name = fields[5] or ""
+		
+		if self.dedup then
+			local key = wd .. ":" .. mask .. ":" .. path
+			local now = skynet.now()
+			if self._last_event[key] and now - self._last_event[key] < DEDUP_WINDOW then
+				return
+			end
+			self._last_event[key] = now
 		end
-	elseif words[1] == "added" then
-		-- added wd response
-		-- ignored here since we use synchronous call
+		
+		if self.callback then
+			self.callback(wd, mask, name, path)
+		end
+	elseif fields[1] == "added" then
+		if self.add_cb then
+			self.add_cb(tonumber(fields[2]))
+			self.add_cb = nil
+		end
 	end
 end
 
--- Add a watch
+-- Add a watch (async, returns immediately)
 function fswatch:add(path, recursive)
 	if recursive then
 		skynet.send(self.handle, "text", "add -r " .. path)
 	else
 		skynet.send(self.handle, "text", "add " .. path)
 	end
-	-- The response comes back as "added wd", but we don't wait for it in this API
 end
 
--- Remove a watch
-function fswatch:remove(wd)
-	skynet.send(self.handle, "text", "remove " .. tostring(wd))
+-- Add a watch (sync, returns watch descriptor)
+function fswatch:add_sync(path, recursive)
+	local co = coroutine.running()
+	self.add_cb = function(wd)
+		skynet.wakeup(co)
+	end
+	self:add(path, recursive)
+	skynet.wait()
+end
+
+-- Remove a watch by path
+function fswatch:remove(path)
+	skynet.send(self.handle, "text", "remove " .. path)
 end
 
 -- Set callback for events
 function fswatch:set_callback(callback)
 	self.callback = callback
+end
+
+-- Enable/disable event de-duplication (default: enabled)
+function fswatch:set_dedup(enable)
+	self.dedup = enable
 end
 
 -- Exit the inotify service

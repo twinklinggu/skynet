@@ -47,6 +47,22 @@ find_watch(struct fswatch_service *is, int wd) {
 	return NULL;
 }
 
+// Find watch by path
+static struct fswatch_watch *
+find_watch_by_path(struct fswatch_service *is, const char *path) {
+	char *real_path = realpath(path, NULL);
+	struct fswatch_watch *w = is->watches;
+	while (w) {
+		if (strcmp(w->path, path) == 0 || (real_path && strcmp(w->path, real_path) == 0)) {
+			free(real_path);
+			return w;
+		}
+		w = w->next;
+	}
+	free(real_path);
+	return NULL;
+}
+
 // Add watch to linked list
 static void
 add_watch(struct fswatch_service *is, struct fswatch_watch *w) {
@@ -95,8 +111,13 @@ add_watch_path(struct fswatch_service *is, const char *path, bool recursive, str
 
 	uint32_t mask = IN_MODIFY | IN_CREATE | IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO | IN_DELETE_SELF | IN_ATTRIB;
 	struct fswatch_watch *w = skynet_malloc(sizeof(*w));
-	w->path = skynet_malloc(strlen(path) + 1);
-	strcpy(w->path, path);
+	char *real_path = realpath(path, NULL);
+	if (real_path) {
+		w->path = real_path;
+	} else {
+		w->path = skynet_malloc(strlen(path) + 1);
+		strcpy(w->path, path);
+	}
 	w->is_dir = S_ISDIR(st.st_mode);
 	w->recursive = recursive;
 	w->parent = parent;
@@ -129,12 +150,11 @@ add_subdirectories(struct fswatch_service *is, const char *dirpath, struct fswat
 			continue;
 
 		char fullpath[PATH_MAX];
-		int len = strlen(dirpath);
-		if (len + strlen(entry->d_name) + 2 > PATH_MAX) {
+		snprintf(fullpath, sizeof(fullpath), "%s/%s", dirpath, entry->d_name);
+		if (strlen(fullpath) >= PATH_MAX - 1) {
 			skynet_error(is->ctx, "fswatch: path too long: %s/%s", dirpath, entry->d_name);
 			continue;
 		}
-		sprintf(fullpath, "%s/%s", dirpath, entry->d_name);
 
 		struct stat st;
 		if (stat(fullpath, &st) == -1)
@@ -194,13 +214,25 @@ _cmd_add(struct fswatch_service *is, char *args) {
 	}
 }
 
-// Handle remove command
+// Handle remove command (accepts wd (number) or path)
 static void
 _cmd_remove(struct fswatch_service *is, char *args) {
-	int wd = atoi(args);
-	struct fswatch_watch *w = find_watch(is, wd);
+	struct fswatch_watch *w = NULL;
+	
+	// Try parse as wd first
+	char *endptr;
+	long wd = strtol(args, &endptr, 10);
+	if (*endptr == '\0') {
+		w = find_watch(is, (int)wd);
+	}
+	
+	// Fallback: try by path
 	if (!w) {
-		skynet_error(is->ctx, "fswatch: cannot find watch %d", wd);
+		w = find_watch_by_path(is, args);
+	}
+	
+	if (!w) {
+		skynet_error(is->ctx, "fswatch: cannot find watch %s", args);
 		return;
 	}
 
@@ -264,12 +296,14 @@ send_event(struct fswatch_service *is, struct fswatch_watch *w, struct inotify_e
 	if (is->subscriber == 0)
 		return;
 
-	char msg[512];
+	char msg[PATH_MAX * 2 + 256];
 	int len;
 	if (event->name[0] == '\0') {
-		len = sprintf(msg, "event %d %08x", w->wd, (unsigned int)event->mask);
+		len = snprintf(msg, sizeof(msg), "event\t%d\t%08x\t%s\t", w->wd, (unsigned int)event->mask, w->path);
 	} else {
-		len = sprintf(msg, "event %d %08x %s", w->wd, (unsigned int)event->mask, event->name);
+		char fullpath[PATH_MAX];
+		snprintf(fullpath, sizeof(fullpath), "%s/%s", w->path, event->name);
+		len = snprintf(msg, sizeof(msg), "event\t%d\t%08x\t%s\t%s", w->wd, (unsigned int)event->mask, fullpath, event->name);
 	}
 	skynet_send(is->ctx, 0, is->subscriber, PTYPE_TEXT, 0, msg, len);
 
@@ -277,16 +311,11 @@ send_event(struct fswatch_service *is, struct fswatch_watch *w, struct inotify_e
 	if ((event->mask & IN_CREATE) && event->mask & IN_ISDIR && w->recursive) {
 		// event->name is the new directory name relative to w->path
 		char fullpath[PATH_MAX];
-		int len = strlen(w->path);
-		if (len + strlen(event->name) + 2 > PATH_MAX) {
-			skynet_error(is->ctx, "fswatch: path too long: %s/%s", w->path, event->name);
-		} else {
-			sprintf(fullpath, "%s/%s", w->path, event->name);
-			struct fswatch_watch *new_watch = add_watch_path(is, fullpath, true, w);
-			// For recursive add, we also need to add its subdirectories
-			if (new_watch) {
-				add_subdirectories(is, fullpath, new_watch);
-			}
+		snprintf(fullpath, sizeof(fullpath), "%s/%s", w->path, event->name);
+		struct fswatch_watch *new_watch = add_watch_path(is, fullpath, true, w);
+		// For recursive add, we also need to add its subdirectories
+		if (new_watch) {
+			add_subdirectories(is, fullpath, new_watch);
 		}
 	}
 

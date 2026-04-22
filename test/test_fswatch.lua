@@ -17,10 +17,10 @@ local function main(...)
 
 	local mon = fswatch.new()
 
-	mon:set_callback(function(wd, mask, name)
+	mon:set_callback(function(wd, mask, name, path)
 		local events = fswatch.decode_mask(mask)
-		print(string.format("Event: wd=%d mask=%08x events={%s} name=%s",
-			wd, mask, table.concat(events, ", "), name or ""))
+		print(string.format("Event: wd=%d mask=%08x events={%s} name=%s path=%s",
+			wd, mask, table.concat(events, ", "), name, path))
 	end)
 
 	mon:add(path, recursive)
