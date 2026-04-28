@@ -1,0 +1,12 @@
+include "config.path"
+
+thread = 8
+logservice = "spdlogger"
+logger = "./test.log"
+harbor = 1
+address = "127.0.0.1:2526"
+master = "127.0.0.1:2013"
+start = "main"
+bootstrap = "snlua bootstrap"
+standalone = "0.0.0.0:2013"
+cpath = root.."cservice/?.so"

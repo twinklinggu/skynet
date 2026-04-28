@@ -23,6 +23,10 @@ $(LUA_STATICLIB) :
 TLS_LIB=
 TLS_INC=
 
+# spdlog (header-only)
+SPDLOG_INC := 3rd/spdlog/include
+SPDLOG_DEF := -DSPDLOG_HEADER_ONLY
+
 # jemalloc
 
 JEMALLOC_STATICLIB := 3rd/jemalloc/lib/libjemalloc_pic.a
@@ -79,6 +83,7 @@ SKYNET_SRC = skynet_main.c skynet_handle.c skynet_module.c skynet_mq.c \
 all : \
   $(SKYNET_BUILD_PATH)/skynet \
   $(foreach v, $(CSERVICE), $(CSERVICE_PATH)/$(v).so) \
+  $(CSERVICE_PATH)/spdlogger.so \
   $(foreach v, $(LUA_CLIB), $(LUA_CLIB_PATH)/$(v).so)
 
 $(SKYNET_BUILD_PATH)/skynet : $(foreach v, $(SKYNET_SRC), skynet-src/$(v)) $(LUA_LIB) $(MALLOC_STATICLIB)
@@ -96,6 +101,9 @@ define CSERVICE_TEMP
 endef
 
 $(foreach v, $(CSERVICE), $(eval $(call CSERVICE_TEMP,$(v))))
+
+$(CSERVICE_PATH)/spdlogger.so : service-src/service_spdlogger.cpp | $(CSERVICE_PATH)
+	$(CXX) $(CFLAGS) $(SPDLOG_DEF) $(SHARED) -I3rd/spdlog/include -Iskynet-src -Iservice-src $< -o $@ -lpthread
 
 $(LUA_CLIB_PATH)/skynet.so : $(addprefix lualib-src/,$(LUA_CLIB_SKYNET)) | $(LUA_CLIB_PATH)
 	$(CC) $(CFLAGS) $(SHARED) $^ -o $@ -Iskynet-src -Iservice-src -Ilualib-src
