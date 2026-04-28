@@ -59,8 +59,6 @@ make cleanall
 # Run example client (terminal 2)
 ./3rd/lua/lua examples/client.lua
 
-# Run individual test file
-./skynet test/test_xxx.lua
 # Or with the standalone Lua interpreter
 ./3rd/lua/lua test/test_xxx.lua
 ```

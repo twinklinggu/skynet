@@ -1,0 +1,5 @@
+include "config.path"
+thread = 2
+harbor = 0
+start = "etcd_register"
+bootstrap = "snlua bootstrap"
